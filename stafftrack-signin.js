@@ -11,16 +11,78 @@ const STORAGE_KEYS = {
   deviceLog:  'vmis_device_sessions' // { date: { staffId, name, status, time } }
 };
 
+let scriptUrl = new URLSearchParams(location.search).get('api') || localStorage.getItem(STORAGE_KEYS.scriptUrl) || '';
+if (scriptUrl) localStorage.setItem(STORAGE_KEYS.scriptUrl, scriptUrl);
+
 function getStaff()     { return JSON.parse(localStorage.getItem(STORAGE_KEYS.staff)     || '[]'); }
 function getLogs()      { return JSON.parse(localStorage.getItem(STORAGE_KEYS.logs)      || '[]'); }
-function getScriptUrl() { return localStorage.getItem(STORAGE_KEYS.scriptUrl) || ''; }
+function getScriptUrl() { return scriptUrl || localStorage.getItem(STORAGE_KEYS.scriptUrl) || ''; }
 function getSchool()    { return JSON.parse(localStorage.getItem(STORAGE_KEYS.school)    || '{"name":"Victory Montessori Int\'l School"}'); }
 function getPins()      { return JSON.parse(localStorage.getItem(STORAGE_KEYS.pins)      || '{}'); }
 function getDeviceLog() { return JSON.parse(localStorage.getItem(STORAGE_KEYS.deviceLog) || '{}'); }
 
 function saveLogs(logs) { localStorage.setItem(STORAGE_KEYS.logs, JSON.stringify(logs)); }
-function savePins(pins) { localStorage.setItem(STORAGE_KEYS.pins, JSON.stringify(pins)); }
-function saveDeviceLog(dl) { localStorage.setItem(STORAGE_KEYS.deviceLog, JSON.stringify(dl)); }
+function savePins(pins) { localStorage.setItem(STORAGE_KEYS.pins, JSON.stringify(pins)); postCloud('savePins', pins); }
+function saveDeviceLog(dl) { localStorage.setItem(STORAGE_KEYS.deviceLog, JSON.stringify(dl)); postCloud('saveDeviceSessions', dl); }
+
+function postCloud(action, data) {
+  const url = getScriptUrl();
+  if (!url) return Promise.resolve();
+  return fetch(url, {
+    method: 'POST',
+    mode: 'no-cors',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ action, data })
+  }).catch(() => {});
+}
+
+function loadCloudData() {
+  const url = getScriptUrl();
+  if (!url) return Promise.resolve(false);
+  const cb = 'staffTrackSignin_' + Date.now() + '_' + Math.random().toString(36).slice(2);
+  return new Promise(resolve => {
+    const script = document.createElement('script');
+    const cleanup = () => { delete window[cb]; script.remove(); };
+    window[cb] = data => {
+      try {
+        if (data && data.ok) {
+          localStorage.setItem(STORAGE_KEYS.staff, JSON.stringify(data.staff || []));
+          localStorage.setItem(STORAGE_KEYS.logs, JSON.stringify(data.logs || []));
+          localStorage.setItem(STORAGE_KEYS.pins, JSON.stringify(data.pins || {}));
+          localStorage.setItem(STORAGE_KEYS.deviceLog, JSON.stringify(data.deviceSessions || {}));
+          if (data.school) localStorage.setItem(STORAGE_KEYS.school, JSON.stringify(data.school));
+          resolve(true);
+        } else {
+          resolve(false);
+        }
+      } finally {
+        cleanup();
+      }
+    };
+    script.onerror = () => { cleanup(); resolve(false); };
+    script.src = url + (url.includes('?') ? '&' : '?') + 'action=getData&callback=' + encodeURIComponent(cb) + '&_=' + Date.now();
+    document.body.appendChild(script);
+  });
+}
+
+function normalizeQRData(raw) {
+  let data = raw;
+  if (typeof raw === 'string') {
+    try { data = JSON.parse(raw); } catch { data = { id: raw.trim() }; }
+  }
+  if (!data || !data.id) return null;
+  if (data.api) {
+    scriptUrl = data.api;
+    localStorage.setItem(STORAGE_KEYS.scriptUrl, scriptUrl);
+  }
+  return {
+    id: String(data.id).trim(),
+    name: data.name || '',
+    dept: data.dept || data.department || '',
+    department: data.department || data.dept || '',
+    role: data.role || ''
+  };
+}
 
 // ════════════════════════════════════════════════
 // DATE / TIME HELPERS
@@ -46,16 +108,10 @@ function fmtDate(d) {
 // ════════════════════════════════════════════════
 // PIN HASHING (simple but effective for local use)
 // ════════════════════════════════════════════════
-async function hashPin(pin, salt) {
-  const data = new TextEncoder().encode(pin + salt);
+async function hashPin(pin, staffId) {
+  const data = new TextEncoder().encode(pin + ':StaffTrack:' + staffId);
   const buf  = await crypto.subtle.digest('SHA-256', data);
   return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
-}
-// Device-level salt (unique per browser, persists across sessions)
-function getDeviceSalt() {
-  let s = localStorage.getItem('vmis_device_salt');
-  if (!s) { s = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36); localStorage.setItem('vmis_device_salt', s); }
-  return s;
 }
 
 // ════════════════════════════════════════════════
@@ -91,8 +147,17 @@ function getShift() {
   return h < 12 ? 'morning' : 'afternoon';
 }
 
+function getDeviceId() {
+  let id = localStorage.getItem('vmis_device_id');
+  if (!id) {
+    id = crypto.randomUUID ? crypto.randomUUID() : 'dev_' + Math.random().toString(36).slice(2);
+    localStorage.setItem('vmis_device_id', id);
+  }
+  return id;
+}
+
 function deviceLockKey() {
-  return nowDateStr() + '_' + getShift();
+  return nowDateStr() + '_' + getShift() + '_' + getDeviceId();
 }
 
 function getDeviceSession() {
@@ -131,6 +196,7 @@ let scanInterval  = null;
 let scanCooldown  = false; // prevent rapid double-scans
 
 async function openScanner() {
+  await loadCloudData();
   // Check device lock first
   const session = getDeviceSession();
   if (session) {
@@ -179,7 +245,8 @@ function scanFrame() {
   if (code && code.data) {
     let parsed = null;
     try { parsed = JSON.parse(code.data); } catch {}
-    if (parsed && parsed.id && parsed.name) {
+    parsed = normalizeQRData(parsed || code.data);
+    if (parsed && parsed.id) {
       scanCooldown = true;
       stopCamera();
       processQRData(parsed);
@@ -187,9 +254,10 @@ function scanFrame() {
   }
 }
 
-function manualEntry() {
+async function manualEntry() {
   const id = prompt('Enter your Staff ID:');
   if (!id) return;
+  await loadCloudData();
   const staff = getStaff().find(s => s.id === id.trim().toUpperCase() || s.id === id.trim());
   if (!staff) {
     alert(`No staff found with ID: "${id}". Please check your ID card.`);
@@ -204,13 +272,20 @@ function manualEntry() {
 // ════════════════════════════════════════════════
 let pendingStaff = null;
 
-function processQRData(data) {
-  const staff = getStaff().find(s => s.id === data.id);
+async function processQRData(data) {
+  data = normalizeQRData(data);
+  if (!data) {
+    alert('QR code not recognized. Please use a StaffTrack QR card.');
+    scanCooldown = false;
+    goIdle();
+    return;
+  }
+  await loadCloudData();
+  const staff = getStaff().find(s => String(s.id).trim().toLowerCase() === data.id.toLowerCase()) || data;
   if (!staff) {
     alert('Staff not found in system. Please contact administration.');
     scanCooldown = false;
-    showScreen('scan');
-    openScanner();
+    goIdle();
     return;
   }
 
@@ -322,7 +397,7 @@ function setupKey(d) {
       } else {
         if (setupBuffer === setupFirst) {
           // Save PIN
-          hashPin(setupBuffer, getDeviceSalt()).then(hashed => {
+          hashPin(setupBuffer, setupStaff.id).then(hashed => {
             const pins = getPins();
             pins[setupStaff.id] = hashed;
             savePins(pins);
@@ -388,7 +463,7 @@ function renderPinDots(error) {
 async function verifyPin() {
   const pins = getPins();
   const stored = pins[pendingStaff.id];
-  const entered = await hashPin(pinBuffer, getDeviceSalt());
+  const entered = await hashPin(pinBuffer, pendingStaff.id);
 
   if (entered === stored) {
     submitAttendance(pendingStaff);
@@ -442,20 +517,12 @@ function submitAttendance(staffData) {
   const logs = getLogs();
   logs.unshift(entry);
   saveLogs(logs);
+  postCloud('addLog', entry);
 
   // Lock this device for the session
   setDeviceSession(staffData);
 
   // Post to Google Sheets
-  const url = getScriptUrl();
-  if (url) {
-    fetch(url, {
-      method: 'POST', mode: 'no-cors',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(entry)
-    }).catch(() => {});
-  }
-
   // Show success
   showSuccessScreen(staffData, entry, now);
   scanCooldown = false;
@@ -570,6 +637,10 @@ function goIdle() {
 // INIT
 // ════════════════════════════════════════════════
 cleanDeviceSessions();
+loadCloudData().then(() => {
+  const school = getSchool();
+  document.getElementById('idleSchoolName').textContent = school.name || "Victory Montessori Int'l School";
+});
 
 // Prevent back gesture from closing the page on mobile
 history.pushState(null, '', location.href);
