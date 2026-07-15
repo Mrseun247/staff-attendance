@@ -11,7 +11,7 @@ const STORAGE_KEYS = {
   deviceLog:  'vmis_device_sessions' // { date: { staffId, name, status, time } }
 };
 
-let scriptUrl = new URLSearchParams(location.search).get('api') || localStorage.getItem(STORAGE_KEYS.scriptUrl) || '';
+let scriptUrl = new URLSearchParams(location.search).get('api') || localStorage.getItem(STORAGE_KEYS.scriptUrl) || 'https://script.google.com/macros/s/AKfycbz2bGmhJq9XjYni5ondNxIPFBzGsquigfPz7e_fmiV9KdYEeT_bC2N59jMDJF8InQM2/exec';
 if (scriptUrl) localStorage.setItem(STORAGE_KEYS.scriptUrl, scriptUrl);
 
 function getStaff()     { return JSON.parse(localStorage.getItem(STORAGE_KEYS.staff)     || '[]'); }
@@ -196,9 +196,16 @@ let scanInterval  = null;
 let scanCooldown  = false; // prevent rapid double-scans
 
 async function openScanner() {
+  // Always pull fresh data before scanning so new staff show up
+  showLoading('Loading latest staff data…');
   await loadCloudData();
-  // Check device lock first
-  const session = getDeviceSession();
+  hideLoading();
+
+  const count = getStaff().length;
+  if (count === 0 && !scriptUrl) {
+    openSetupOverlay();
+    return;
+  }
   if (session) {
     showBlockedScreen({ reason: 'device', session });
     return;
@@ -635,11 +642,96 @@ function goIdle() {
 // ════════════════════════════════════════════════
 // INIT
 // ════════════════════════════════════════════════
+// ════════════════════════════════════════════════
+// INIT — cloud-first, with visible status
+// ════════════════════════════════════════════════
+async function init() {
+  updateConnBar('loading', 'Connecting…');
+  showLoading('Connecting to server…');
+
+  if (!scriptUrl) {
+    hideLoading();
+    updateConnBar('disconnected', 'Not connected — tap to configure');
+    // Show setup overlay so staff can enter the URL themselves
+    openSetupOverlay();
+    return;
+  }
+
+  const ok = await loadCloudData();
+  hideLoading();
+
+  if (ok) {
+    const count = getStaff().length;
+    const school = getSchool();
+    document.getElementById('idleSchoolName').textContent = school.name || "Victory Montessori Int'l School";
+    updateConnBar('connected', (count > 0 ? count + ' staff loaded · ' : '') + 'Connected');
+    document.getElementById('idleSub').textContent =
+      count > 0
+        ? 'Hold your QR card up to the camera to record your attendance.'
+        : 'Connected but no staff registered yet. Ask your admin to add staff.';
+  } else {
+    // Offline but has cached data
+    const count = getStaff().length;
+    if (count > 0) {
+      updateConnBar('disconnected', 'Offline — using cached data (' + count + ' staff)');
+    } else {
+      updateConnBar('disconnected', 'No data — tap to reconfigure');
+      openSetupOverlay();
+    }
+  }
+}
+
+// ── Connection bar helpers ──
+function updateConnBar(state, text) {
+  const bar = document.getElementById('connBar');
+  const txt = document.getElementById('connBarText');
+  if (!bar || !txt) return;
+  bar.className = 'conn-bar ' + state;
+  txt.textContent = text;
+  // only clickable when disconnected
+  bar.onclick = state === 'disconnected' ? openSetupOverlay : null;
+  bar.style.cursor = state === 'disconnected' ? 'pointer' : 'default';
+}
+
+function showLoading(msg) {
+  const el = document.getElementById('loadingOverlay');
+  const txt = document.getElementById('loadingTxt');
+  if (el) { el.classList.add('open'); }
+  if (txt) txt.textContent = msg || 'Loading…';
+}
+function hideLoading() {
+  const el = document.getElementById('loadingOverlay');
+  if (el) el.classList.remove('open');
+}
+
+// ── Setup URL overlay ──
+function openSetupOverlay() {
+  const el = document.getElementById('setupOverlay');
+  if (el) el.classList.add('open');
+  const input = document.getElementById('setupUrlInput');
+  if (input && scriptUrl) input.value = scriptUrl;
+}
+function dismissSetupOverlay() {
+  const el = document.getElementById('setupOverlay');
+  if (el) el.classList.remove('open');
+}
+async function saveSetupUrl() {
+  const input = document.getElementById('setupUrlInput');
+  const val = input ? input.value.trim() : '';
+  if (!val || !val.startsWith('http')) {
+    input.style.borderColor = 'red';
+    setTimeout(() => { input.style.borderColor = ''; }, 1500);
+    return;
+  }
+  scriptUrl = val;
+  localStorage.setItem(STORAGE_KEYS.scriptUrl, scriptUrl);
+  dismissSetupOverlay();
+  // Re-run init with the new URL
+  await init();
+}
+
 cleanDeviceSessions();
-loadCloudData().then(() => {
-  const school = getSchool();
-  document.getElementById('idleSchoolName').textContent = school.name || "Victory Montessori Int'l School";
-});
+init();
 
 // Prevent back gesture from closing the page on mobile
 history.pushState(null, '', location.href);
