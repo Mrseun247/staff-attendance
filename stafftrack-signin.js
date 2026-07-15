@@ -25,7 +25,7 @@ function saveLogs(logs) { localStorage.setItem(STORAGE_KEYS.logs, JSON.stringify
 function savePins(pins) { localStorage.setItem(STORAGE_KEYS.pins, JSON.stringify(pins)); postCloud('savePins', pins); }
 function saveDeviceLog(dl) { localStorage.setItem(STORAGE_KEYS.deviceLog, JSON.stringify(dl)); postCloud('saveDeviceSessions', dl); }
 
-function postCloud(action, data) {
+async function postCloud(action, data) {
   const url = getScriptUrl();
   if (!url) return Promise.resolve();
   return fetch(url, {
@@ -534,9 +534,8 @@ function submitAttendance(staffData) {
 let autoReturnTimer = null;
 
 function showSuccessScreen(staff, entry, now) {
+  const isIn = entry.status === 'IN';
   const screen = document.getElementById('screen-success');
-  const isIn   = entry.status === 'IN';
-
   screen.className = `screen active type-${isIn ? 'in' : 'out'}`;
 
   document.getElementById('successIcon').textContent  = isIn ? '🌅' : '🌆';
