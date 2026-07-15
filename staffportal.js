@@ -206,6 +206,9 @@ async function openScanner() {
     openSetupOverlay();
     return;
   }
+
+  // Check device lock
+  const session = getDeviceSession();
   if (session) {
     showBlockedScreen({ reason: 'device', session });
     return;
@@ -240,7 +243,7 @@ function scanFrame() {
   if (scanCooldown) return;
   const video  = document.getElementById('scanVideo');
   const canvas = document.getElementById('scanCanvas');
-  if (!video.videoWidth) return;
+  if (!video || !video.videoWidth) return;
 
   canvas.width  = video.videoWidth;
   canvas.height = video.videoHeight;
@@ -250,62 +253,89 @@ function scanFrame() {
   const code = jsQR(img.data, img.width, img.height, { inversionAttempts: 'attemptBoth' });
 
   if (code && code.data) {
-    let parsed = null;
-    try { parsed = JSON.parse(code.data); } catch {}
-    parsed = normalizeQRData(parsed || code.data);
-    if (parsed && parsed.id) {
-      scanCooldown = true;
-      stopCamera();
-      processQRData(parsed);
-    }
+    scanCooldown = true;
+    stopCamera();
+    // Any QR scan → open staff picker (school QR, URL, anything)
+    openStaffPicker();
   }
+}
+
+// ════════════════════════════════════════════════
+// STAFF PICKER — shown after any QR scan
+// ════════════════════════════════════════════════
+function openStaffPicker() {
+  const search = document.getElementById('pickSearch');
+  if (search) search.value = '';
+  renderPickList();
+  showScreen('pick');
+}
+
+function renderPickList() {
+  const list    = document.getElementById('pickList');
+  const query   = (document.getElementById('pickSearch')?.value || '').toLowerCase().trim();
+  const staff   = getStaff();
+  const today   = nowDateStr();
+  const allLogs = getLogs();
+
+  let filtered = staff;
+  if (query) {
+    filtered = staff.filter(s =>
+      s.name.toLowerCase().includes(query) ||
+      s.id.toLowerCase().includes(query) ||
+      (s.dept || '').toLowerCase().includes(query)
+    );
+  }
+
+  if (filtered.length === 0) {
+    list.innerHTML = '<div class="pick-empty">' +
+      (staff.length === 0
+        ? '⚠️ No staff registered yet. Ask admin to add staff first.'
+        : '😕 No match for "' + query + '"') +
+      '</div>';
+    return;
+  }
+
+  list.innerHTML = filtered.map(s => {
+    const recs   = allLogs.filter(l => l.id === s.id && l.date === today);
+    const hasIn  = recs.some(l => l.status === 'IN');
+    const hasOut = recs.some(l => l.status === 'OUT');
+    let badge, cls;
+    if (hasIn && hasOut) { badge = 'Done ✓';        cls = 'done'; }
+    else if (hasIn)       { badge = 'Signed In 🌅';  cls = 'in';   }
+    else                  { badge = 'Not yet';        cls = 'none'; }
+    return '<div class="pick-item" onclick="selectStaff(\'' + s.id + '\')">' +
+      '<div class="pick-avatar">' + s.name.charAt(0).toUpperCase() + '</div>' +
+      '<div class="pick-info">' +
+        '<div class="pick-name">' + s.name + '</div>' +
+        '<div class="pick-meta">' + s.role + ' · ' + s.dept + '</div>' +
+      '</div>' +
+      '<span class="pick-today ' + cls + '">' + badge + '</span>' +
+    '</div>';
+  }).join('');
+}
+
+function selectStaff(id) {
+  const staff = getStaff().find(s => s.id === id);
+  if (!staff) return;
+  scanCooldown = false;
+  processStaff(staff);
 }
 
 async function manualEntry() {
-  const id = prompt('Enter your Staff ID:');
-  if (!id) return;
-  await loadCloudData();
-  const staff = getStaff().find(s => s.id === id.trim().toUpperCase() || s.id === id.trim());
-  if (!staff) {
-    alert(`No staff found with ID: "${id}". Please check your ID card.`);
-    return;
-  }
   stopCamera();
-  processQRData(staff);
+  openStaffPicker();
 }
 
 // ════════════════════════════════════════════════
-// CORE LOGIC: Process scanned QR
+// CORE LOGIC: Process selected staff
 // ════════════════════════════════════════════════
 let pendingStaff = null;
 
-async function processQRData(data) {
-  data = normalizeQRData(data);
-  if (!data) {
-    alert('QR code not recognized. Please use a StaffTrack QR card.');
-    scanCooldown = false;
-    goIdle();
-    return;
-  }
-  await loadCloudData();
-  const staff = getStaff().find(s => String(s.id).trim().toLowerCase() === data.id.toLowerCase()) || data;
-  if (!staff) {
-    alert('Staff not found in system. Please contact administration.');
-    scanCooldown = false;
-    goIdle();
-    return;
-  }
-
-  // Check 1: Has this STAFF already signed in/out today for this shift?
+async function processStaff(staff) {
   const today   = nowDateStr();
   const shift   = getShift();
   const allLogs = getLogs();
-
-  // Staff can do exactly 2 actions per day: morning IN + afternoon OUT
-  // Count today's total records for this staff
   const todayRecords = allLogs.filter(l => l.id === staff.id && l.date === today);
-
-  // Check if staff has already done both actions (IN + OUT)
   const hasIn  = todayRecords.some(l => l.status === 'IN');
   const hasOut = todayRecords.some(l => l.status === 'OUT');
 
