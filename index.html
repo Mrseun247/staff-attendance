@@ -648,8 +648,94 @@ html, body {
   cursor: pointer;
 }
 
-/* locked device overlay */
-.device-locked-banner {
+/* connection status bar */
+.conn-bar {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  padding: 8px 16px;
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+  letter-spacing: 0.5px;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.conn-bar.connected { background: rgba(22,163,74,0.2); color: #4ade80; }
+.conn-bar.disconnected { background: rgba(220,38,38,0.25); color: #fca5a5; cursor: pointer; }
+.conn-bar.loading { background: rgba(245,166,35,0.15); color: var(--gold); }
+.conn-dot-sm { width: 6px; height: 6px; border-radius: 50%; background: currentColor; display: inline-block; }
+
+/* setup URL overlay */
+.setup-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.92);
+  backdrop-filter: blur(12px);
+  z-index: 500;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.setup-overlay.open { display: flex; }
+.setup-card {
+  background: var(--white);
+  border-radius: 24px;
+  padding: 32px 24px;
+  width: 100%;
+  max-width: 380px;
+  text-align: center;
+  color: var(--text);
+}
+.setup-card h3 { font-size: 20px; font-weight: 800; color: var(--navy); margin-bottom: 8px; }
+.setup-card p  { font-size: 13px; color: var(--gray); margin-bottom: 20px; line-height: 1.6; }
+.setup-card input {
+  width: 100%; padding: 12px 14px;
+  border: 2px solid #E5E7EB; border-radius: 12px;
+  font-family: 'Inter', sans-serif; font-size: 13px;
+  color: var(--text); outline: none; margin-bottom: 12px;
+}
+.setup-card input:focus { border-color: var(--navy); }
+.setup-btn {
+  width: 100%; padding: 14px;
+  background: var(--navy); color: var(--white);
+  border: none; border-radius: 12px;
+  font-family: 'Inter', sans-serif;
+  font-size: 15px; font-weight: 700; cursor: pointer;
+  margin-bottom: 8px;
+}
+.setup-btn:active { opacity: 0.85; }
+.setup-btn.secondary {
+  background: transparent; color: var(--gray);
+  border: 1.5px solid #E5E7EB; margin-bottom: 0;
+}
+
+/* loading overlay */
+.loading-overlay {
+  position: fixed; inset: 0;
+  background: rgba(15,28,63,0.85);
+  backdrop-filter: blur(8px);
+  z-index: 400;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 16px;
+  color: var(--white);
+}
+.loading-overlay.open { display: flex; }
+.spinner {
+  width: 40px; height: 40px;
+  border: 3px solid rgba(255,255,255,0.2);
+  border-top-color: var(--gold);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.loading-txt { font-size: 14px; font-weight: 600; color: rgba(255,255,255,0.7); }
   position: fixed;
   bottom: 0; left: 0; right: 0;
   background: rgba(220,38,38,0.95);
@@ -703,6 +789,28 @@ html, body {
 <body>
 
 <!-- ══════════════════════════════════════════
+     LOADING OVERLAY
+══════════════════════════════════════════ -->
+<div class="loading-overlay" id="loadingOverlay">
+  <div class="spinner"></div>
+  <div class="loading-txt" id="loadingTxt">Connecting to server…</div>
+</div>
+
+<!-- ══════════════════════════════════════════
+     SETUP URL OVERLAY (shown when no API URL)
+══════════════════════════════════════════ -->
+<div class="setup-overlay" id="setupOverlay">
+  <div class="setup-card">
+    <div style="font-size:40px;margin-bottom:12px">🔗</div>
+    <h3>Connect to Server</h3>
+    <p>This portal needs a Google Apps Script URL to load staff data. Ask your admin for the URL, or paste it below.</p>
+    <input type="url" id="setupUrlInput" placeholder="https://script.google.com/macros/s/…/exec"/>
+    <button class="setup-btn" onclick="saveSetupUrl()">Connect & Load Data</button>
+    <button class="setup-btn secondary" onclick="dismissSetupOverlay()">Skip (use offline mode)</button>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════
      DEVICE LOCKED BANNER
 ══════════════════════════════════════════ -->
 <div class="device-locked-banner" id="deviceLockedBanner">
@@ -717,6 +825,12 @@ html, body {
   <div class="ring"></div>
   <div class="ring"></div>
 
+  <!-- connection status bar -->
+  <div class="conn-bar disconnected" id="connBar" onclick="openSetupOverlay()">
+    <span class="conn-dot-sm"></span>
+    <span id="connBarText">Not connected — tap to configure</span>
+  </div>
+
   <div class="idle-school" id="idleSchoolName">Victory Montessori Int'l School</div>
 
   <div class="idle-qr-icon">🔳</div>
@@ -725,7 +839,7 @@ html, body {
   <div class="idle-date" id="idleDate">Thursday, 1 January 2026</div>
 
   <div class="idle-title">Staff <span>Sign-In</span><br/>Portal</div>
-  <div class="idle-sub">Hold your QR card up to the camera to record your attendance.</div>
+  <div class="idle-sub" id="idleSub">Hold your QR card up to the camera to record your attendance.</div>
 
   <button class="btn-scan" onclick="openScanner()">
     <span style="font-size:20px">📷</span> Tap to Scan QR Code
