@@ -65,24 +65,6 @@ function loadCloudData() {
   });
 }
 
-function normalizeQRData(raw) {
-  let data = raw;
-  if (typeof raw === 'string') {
-    try { data = JSON.parse(raw); } catch { data = { id: raw.trim() }; }
-  }
-  if (!data || !data.id) return null;
-  if (data.api) {
-    scriptUrl = data.api;
-    localStorage.setItem(STORAGE_KEYS.scriptUrl, scriptUrl);
-  }
-  return {
-    id: String(data.id).trim(),
-    name: data.name || '',
-    dept: data.dept || data.department || '',
-    department: data.department || data.dept || '',
-    role: data.role || ''
-  };
-}
 
 // ════════════════════════════════════════════════
 // DATE / TIME HELPERS
@@ -189,14 +171,13 @@ function cleanDeviceSessions() {
 }
 
 // ════════════════════════════════════════════════
-// SCANNER
+// SCANNER — fixed
 // ════════════════════════════════════════════════
 let cameraStream  = null;
 let scanInterval  = null;
-let scanCooldown  = false; // prevent rapid double-scans
+let scanCooldown  = false;
 
 async function openScanner() {
-  // Always pull fresh data before scanning so new staff show up
   showLoading('Loading latest staff data…');
   await loadCloudData();
   hideLoading();
@@ -207,7 +188,6 @@ async function openScanner() {
     return;
   }
 
-  // Check device lock
   const session = getDeviceSession();
   if (session) {
     showBlockedScreen({ reason: 'device', session });
@@ -215,16 +195,38 @@ async function openScanner() {
   }
 
   showScreen('scan');
-  document.getElementById('scanHint').textContent = '📋 Hold QR card steady inside the frame';
 
   try {
-    cameraStream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }
-    });
-    document.getElementById('scanVideo').srcObject = cameraStream;
-    scanInterval = setInterval(scanFrame, 250);
+    // prefer rear camera on mobile
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }
+      });
+    } catch {
+      stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    }
+    cameraStream = stream;
+    const video = document.getElementById('scanVideo');
+    video.srcObject = stream;
+    // wait for video to actually have dimensions before starting scan loop
+    video.onloadedmetadata = () => {
+      video.play().then(() => {
+        document.getElementById('scanHint').textContent = '📋 Hold QR card steady inside the frame';
+        if (scanInterval) clearInterval(scanInterval);
+        scanInterval = setInterval(scanFrame, 200);
+      });
+    };
+    // fallback: some browsers don't fire onloadedmetadata reliably — poll instead
+    setTimeout(() => {
+      if (!scanInterval) {
+        video.play().catch(() => {});
+        if (scanInterval) clearInterval(scanInterval);
+        scanInterval = setInterval(scanFrame, 200);
+      }
+    }, 1500);
   } catch (err) {
-    alert('Camera access denied. Please allow camera permission and try again.');
+    alert('Camera error: ' + (err.message || 'Allow camera access and try again.'));
     closeScanner();
   }
 }
@@ -235,28 +237,47 @@ function closeScanner() {
 }
 
 function stopCamera() {
-  if (cameraStream) { cameraStream.getTracks().forEach(t => t.stop()); cameraStream = null; }
   if (scanInterval) { clearInterval(scanInterval); scanInterval = null; }
+  if (cameraStream) { cameraStream.getTracks().forEach(t => t.stop()); cameraStream = null; }
+  const video = document.getElementById('scanVideo');
+  if (video) { video.srcObject = null; video.onloadedmetadata = null; }
 }
 
 function scanFrame() {
   if (scanCooldown) return;
+
   const video  = document.getElementById('scanVideo');
   const canvas = document.getElementById('scanCanvas');
-  if (!video || !video.videoWidth) return;
+  if (!video || !canvas) return;
 
-  canvas.width  = video.videoWidth;
-  canvas.height = video.videoHeight;
-  const ctx = canvas.getContext('2d');
-  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-  const img  = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const code = jsQR(img.data, img.width, img.height, { inversionAttempts: 'attemptBoth' });
+  // video must be playing and have real dimensions
+  if (video.readyState < 2) return;
+  if (!video.videoWidth || !video.videoHeight) return;
+  if (video.paused || video.ended) return;
 
-  if (code && code.data) {
-    scanCooldown = true;
-    stopCamera();
-    // Any QR scan → open staff picker (school QR, URL, anything)
-    openStaffPicker();
+  // update hint once frames are actually processing
+  const hint = document.getElementById('scanHint');
+  if (hint && !hint.textContent.includes('Hold QR')) {
+    hint.textContent = '📋 Hold QR card steady inside the frame';
+  }
+
+  try {
+    canvas.width  = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const code = jsQR(imageData.data, imageData.width, imageData.height, {
+      inversionAttempts: 'attemptBoth'
+    });
+
+    if (code && code.data && code.data.trim()) {
+      scanCooldown = true;
+      stopCamera();
+      openStaffPicker();
+    }
+  } catch (e) {
+    console.warn('scanFrame error:', e);
   }
 }
 
